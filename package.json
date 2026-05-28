@@ -1,0 +1,23 @@
+{
+  "name": "files-mentioned-by-the-user-grease",
+  "version": "1.0.0",
+  "description": "",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "serve": "node server.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "tailwindcss": "^4.3.0",
+    "vite": "^8.0.14"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.npm-cache/
+data/
+*.zip
+vite.log
+src/App.*rollback.jsx
+.env
+.env.*
+!.env.example

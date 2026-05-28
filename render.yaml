@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: grease-nomads-ppi
+    env: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm run serve
+    envVars:
+      - key: NODE_ENV
+        value: production
+    disk:
+      name: grease-nomads-report-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
