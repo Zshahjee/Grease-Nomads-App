@@ -139,6 +139,6 @@ createServer(async (req, res) => {
       res.end('Not found');
     }
   }
-}).listen(port, '127.0.0.1', () => {
-  console.log(`Serving Grease Nomads PPI at http://127.0.0.1:${port}/`);
+}).listen(port, '0.0.0.0', () => {
+  console.log(`Serving Grease Nomads PPI on port ${port}`);
 });
