@@ -53,8 +53,10 @@ async function api(req, res, url) {
       const input = JSON.parse(await readBody(req) || '{}');
       const now = new Date().toISOString();
       const id = input.id || randomUUID().slice(0, 12);
+      const reportNumber = input.reportNumber || `GN-PPI-${now.slice(0, 10).replaceAll('-', '')}-${id.slice(0, 4).toUpperCase()}`;
       const report = {
         id,
+        reportNumber,
         status: input.status || 'completed',
         createdAt: input.createdAt || now,
         updatedAt: now,
@@ -93,6 +95,7 @@ async function api(req, res, url) {
         const r = JSON.parse(await readFile(join(reportRoot, file), 'utf8'));
         reports.push({
           id: r.id,
+          reportNumber: r.reportNumber,
           status: r.status,
           createdAt: r.createdAt,
           updatedAt: r.updatedAt,
