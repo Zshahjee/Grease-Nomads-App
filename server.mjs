@@ -126,7 +126,7 @@ createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
     if (await api(req, res, url)) return;
 
-    const requested = url.pathname === '/' || url.pathname.startsWith('/report/') ? '/index.html' : url.pathname;
+    const requested = url.pathname === '/' || url.pathname === '/report' || url.pathname.startsWith('/report/') ? '/index.html' : url.pathname;
     const file = normalize(join(root, requested));
     if (!file.startsWith(root)) {
       res.writeHead(403);
