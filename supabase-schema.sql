@@ -10,8 +10,13 @@ create table if not exists public.ppi_reports (
   vin text,
   action text,
   risk text,
+  sent_at timestamptz,
+  viewed_at timestamptz,
   payload jsonb not null
 );
+
+alter table public.ppi_reports add column if not exists sent_at timestamptz;
+alter table public.ppi_reports add column if not exists viewed_at timestamptz;
 
 create index if not exists ppi_reports_updated_at_idx on public.ppi_reports (updated_at desc);
 create index if not exists ppi_reports_vehicle_idx on public.ppi_reports (vehicle);

@@ -126,6 +126,8 @@ function reportListItem(r) {
     vin: p.record?.VIN || r.vin || '',
     action: p.action || r.action || '',
     risk: p.risk || r.risk || '',
+    sentAt: p.sentAt || r.sent_at || p.createdAt || r.created_at,
+    viewedAt: p.viewedAt || r.viewed_at || '',
   };
 }
 
@@ -147,6 +149,8 @@ async function saveReport(report) {
     vin: uploaded.record?.VIN || '',
     action: uploaded.action || '',
     risk: uploaded.risk || '',
+    sent_at: uploaded.sentAt || uploaded.createdAt,
+    viewed_at: uploaded.viewedAt || null,
     payload: uploaded,
   };
   const saved = await supabaseFetch(`/rest/v1/${supabaseTable}?on_conflict=id`, {
@@ -164,7 +168,13 @@ async function getReport(id) {
   if (!useSupabase) return JSON.parse(await readFile(reportPath(id), 'utf8'));
   const rows = await supabaseFetch(`/rest/v1/${supabaseTable}?id=eq.${encodeURIComponent(id)}&select=payload`);
   if (!rows?.[0]?.payload) throw new Error('Report not found');
-  return rows[0].payload;
+  const payload = { ...rows[0].payload, viewedAt: rows[0].payload.viewedAt || new Date().toISOString() };
+  await supabaseFetch(`/rest/v1/${supabaseTable}?id=eq.${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+    body: JSON.stringify({ viewed_at: payload.viewedAt, payload }),
+  });
+  return payload;
 }
 
 async function listReports() {
@@ -178,7 +188,7 @@ async function listReports() {
     }
     return reports.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   }
-  const rows = await supabaseFetch(`/rest/v1/${supabaseTable}?select=id,report_number,status,created_at,updated_at,public_path,vehicle,customer,vin,action,risk&order=updated_at.desc`);
+  const rows = await supabaseFetch(`/rest/v1/${supabaseTable}?select=id,report_number,status,created_at,updated_at,public_path,vehicle,customer,vin,action,risk,sent_at,viewed_at&order=updated_at.desc`);
   return (rows || []).map(reportListItem);
 }
 
@@ -195,7 +205,7 @@ async function api(req, res, url) {
         status: input.status || 'completed',
         createdAt: input.createdAt || now,
         updatedAt: now,
-        publicPath: `/report/${id}`,
+        publicPath: `/report/${id}/the-vehicles-inspection-result`,
         record: input.record || {},
         data: input.data || {},
         photos: input.photos || {},
