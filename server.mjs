@@ -10,6 +10,11 @@ const dataRoot = join(process.cwd(), 'data');
 const reportRoot = join(dataRoot, 'reports');
 const indexFile = join(root, 'index.html');
 const maxBody = 30 * 1024 * 1024;
+const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabaseTable = process.env.SUPABASE_REPORTS_TABLE || 'ppi_reports';
+const supabaseBucket = process.env.SUPABASE_PHOTO_BUCKET || 'ppi-photos';
+const useSupabase = !!(supabaseUrl && supabaseKey);
 const types = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -47,6 +52,136 @@ function reportPath(id) {
   return join(reportRoot, `${String(id).replace(/[^a-zA-Z0-9_-]/g, '')}.json`);
 }
 
+function cleanPathPart(value, fallback = 'file') {
+  return String(value || fallback).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90) || fallback;
+}
+
+function publicStorageUrl(path) {
+  return `${supabaseUrl}/storage/v1/object/public/${supabaseBucket}/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+function photoBuffer(photo) {
+  const dataUrl = String(photo?.url || '');
+  const match = dataUrl.match(/^data:([^;,]+)?(?:;[^,]*)?;base64,(.+)$/);
+  if (!match) return null;
+  return {
+    type: photo.type || match[1] || 'application/octet-stream',
+    body: Buffer.from(match[2], 'base64'),
+  };
+}
+
+async function supabaseFetch(path, options = {}) {
+  const res = await fetch(`${supabaseUrl}${path}`, {
+    ...options,
+    headers: {
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+      ...(options.headers || {}),
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(text || `Supabase request failed (${res.status})`);
+  return text ? JSON.parse(text) : null;
+}
+
+async function uploadReportPhotos(id, photos = {}) {
+  if (!useSupabase) return photos;
+  const next = {};
+  for (const [rowKey, files] of Object.entries(photos || {})) {
+    next[rowKey] = [];
+    for (let i = 0; i < (files || []).length; i += 1) {
+      const file = files[i] || {};
+      const parsed = photoBuffer(file);
+      if (!parsed) {
+        next[rowKey].push(file);
+        continue;
+      }
+      const ext = cleanPathPart((file.name || '').split('.').pop() || parsed.type.split('/').pop() || 'jpg');
+      const path = `${cleanPathPart(id)}/${cleanPathPart(rowKey)}/${String(i + 1).padStart(2, '0')}-${cleanPathPart(file.name || `photo.${ext}`)}`;
+      await supabaseFetch(`/storage/v1/object/${supabaseBucket}/${path}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': parsed.type,
+          'x-upsert': 'true',
+        },
+        body: parsed.body,
+      });
+      next[rowKey].push({ ...file, url: publicStorageUrl(path), storagePath: path, type: parsed.type });
+    }
+  }
+  return next;
+}
+
+function reportListItem(r) {
+  const p = r.payload || r;
+  return {
+    id: p.id || r.id,
+    reportNumber: p.reportNumber || r.report_number,
+    status: p.status || r.status,
+    createdAt: p.createdAt || r.created_at,
+    updatedAt: p.updatedAt || r.updated_at,
+    publicPath: p.publicPath || r.public_path,
+    vehicle: p.record?.['Vehicle Year / Make / Model'] || r.vehicle || '',
+    customer: p.record?.['Customer Name'] || r.customer || '',
+    vin: p.record?.VIN || r.vin || '',
+    action: p.action || r.action || '',
+    risk: p.risk || r.risk || '',
+  };
+}
+
+async function saveReport(report) {
+  if (!useSupabase) {
+    await writeFile(reportPath(report.id), JSON.stringify(report, null, 2), 'utf8');
+    return report;
+  }
+  const uploaded = { ...report, photos: await uploadReportPhotos(report.id, report.photos) };
+  const row = {
+    id: uploaded.id,
+    report_number: uploaded.reportNumber,
+    status: uploaded.status,
+    created_at: uploaded.createdAt,
+    updated_at: uploaded.updatedAt,
+    public_path: uploaded.publicPath,
+    vehicle: uploaded.record?.['Vehicle Year / Make / Model'] || '',
+    customer: uploaded.record?.['Customer Name'] || '',
+    vin: uploaded.record?.VIN || '',
+    action: uploaded.action || '',
+    risk: uploaded.risk || '',
+    payload: uploaded,
+  };
+  const saved = await supabaseFetch(`/rest/v1/${supabaseTable}?on_conflict=id`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify(row),
+  });
+  return saved?.[0]?.payload || uploaded;
+}
+
+async function getReport(id) {
+  if (!useSupabase) return JSON.parse(await readFile(reportPath(id), 'utf8'));
+  const rows = await supabaseFetch(`/rest/v1/${supabaseTable}?id=eq.${encodeURIComponent(id)}&select=payload`);
+  if (!rows?.[0]?.payload) throw new Error('Report not found');
+  return rows[0].payload;
+}
+
+async function listReports() {
+  if (!useSupabase) {
+    const files = existsSync(reportRoot) ? await readdir(reportRoot) : [];
+    const reports = [];
+    for (const file of files.filter(x => x.endsWith('.json'))) {
+      try {
+        reports.push(reportListItem(JSON.parse(await readFile(join(reportRoot, file), 'utf8'))));
+      } catch {}
+    }
+    return reports.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  }
+  const rows = await supabaseFetch(`/rest/v1/${supabaseTable}?select=id,report_number,status,created_at,updated_at,public_path,vehicle,customer,vin,action,risk&order=updated_at.desc`);
+  return (rows || []).map(reportListItem);
+}
+
 async function api(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/reports') {
     try {
@@ -69,8 +204,7 @@ async function api(req, res, url) {
         risk: input.risk || '',
         hybrid: !!input.hybrid,
       };
-      await writeFile(reportPath(id), JSON.stringify(report, null, 2), 'utf8');
-      json(res, 200, report);
+      json(res, 200, await saveReport(report));
     } catch (error) {
       json(res, error.message === 'Payload too large' ? 413 : 400, { error: error.message || 'Invalid report payload' });
     }
@@ -80,7 +214,7 @@ async function api(req, res, url) {
   const match = url.pathname.match(/^\/api\/reports\/([^/]+)$/);
   if (req.method === 'GET' && match) {
     try {
-      json(res, 200, JSON.parse(await readFile(reportPath(match[1]), 'utf8')));
+      json(res, 200, await getReport(match[1]));
     } catch {
       json(res, 404, { error: 'Report not found' });
     }
@@ -88,27 +222,7 @@ async function api(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/reports') {
-    const files = existsSync(reportRoot) ? await readdir(reportRoot) : [];
-    const reports = [];
-    for (const file of files.filter(x => x.endsWith('.json'))) {
-      try {
-        const r = JSON.parse(await readFile(join(reportRoot, file), 'utf8'));
-        reports.push({
-          id: r.id,
-          reportNumber: r.reportNumber,
-          status: r.status,
-          createdAt: r.createdAt,
-          updatedAt: r.updatedAt,
-          publicPath: r.publicPath,
-          vehicle: r.record?.['Vehicle Year / Make / Model'] || '',
-          customer: r.record?.['Customer Name'] || '',
-          vin: r.record?.VIN || '',
-          action: r.action || '',
-          risk: r.risk || '',
-        });
-      } catch {}
-    }
-    json(res, 200, reports.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))));
+    json(res, 200, await listReports());
     return true;
   }
 
