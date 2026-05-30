@@ -206,6 +206,7 @@ async function api(req, res, url) {
       };
       json(res, 200, await saveReport(report));
     } catch (error) {
+      console.error('Report save failed:', error);
       json(res, error.message === 'Payload too large' ? 413 : 400, { error: error.message || 'Invalid report payload' });
     }
     return true;
@@ -215,8 +216,9 @@ async function api(req, res, url) {
   if (req.method === 'GET' && match) {
     try {
       json(res, 200, await getReport(match[1]));
-    } catch {
-      json(res, 404, { error: 'Report not found' });
+    } catch (error) {
+      console.error('Report load failed:', error);
+      json(res, 404, { error: error.message || 'Report not found' });
     }
     return true;
   }

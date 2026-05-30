@@ -18,7 +18,11 @@ create index if not exists ppi_reports_vehicle_idx on public.ppi_reports (vehicl
 create index if not exists ppi_reports_customer_idx on public.ppi_reports (customer);
 create index if not exists ppi_reports_vin_idx on public.ppi_reports (vin);
 
+grant usage on schema public to service_role;
+grant select, insert, update, delete on table public.ppi_reports to service_role;
+
 insert into storage.buckets (id, name, public)
 values ('ppi-photos', 'ppi-photos', true)
 on conflict (id) do update set public = true;
 
+notify pgrst, 'reload schema';
