@@ -295,6 +295,7 @@ async function api(req, res, url) {
         notes: input.notes || {},
         action: input.action || '',
         risk: input.risk || '',
+        inspectionType: input.inspectionType || 'ppi',
         hybrid: !!input.hybrid,
       };
       json(res, 200, await saveReport(report));
