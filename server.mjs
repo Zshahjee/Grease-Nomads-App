@@ -170,6 +170,8 @@ function reportListItem(r) {
     createdAt: p.createdAt || r.created_at,
     updatedAt: p.updatedAt || r.updated_at,
     publicPath: p.publicPath || r.public_path,
+    inspectionType: p.inspectionType || r.inspection_type || 'ppi',
+    inspectionDate: p.record?.['Inspection Date'] || '',
     vehicle: p.record?.['Vehicle Year / Make / Model'] || r.vehicle || '',
     customer: p.record?.['Customer Name'] || r.customer || '',
     vin: p.record?.VIN || r.vin || '',
@@ -217,6 +219,7 @@ async function getReport(id) {
   if (!useSupabase) return JSON.parse(await readFile(reportPath(id), 'utf8'));
   const rows = await supabaseFetch(`/rest/v1/${supabaseTable}?id=eq.${encodeURIComponent(id)}&select=payload`);
   if (!rows?.[0]?.payload) throw new Error('Report not found');
+  if (String(rows[0].payload.status || '').toLowerCase() === 'draft') return rows[0].payload;
   const payload = { ...rows[0].payload, viewedAt: rows[0].payload.viewedAt || new Date().toISOString() };
   await supabaseFetch(`/rest/v1/${supabaseTable}?id=eq.${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -237,7 +240,7 @@ async function listReports() {
     }
     return reports.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   }
-  const rows = await supabaseFetch(`/rest/v1/${supabaseTable}?select=id,report_number,status,created_at,updated_at,public_path,vehicle,customer,vin,action,risk,sent_at,viewed_at&order=updated_at.desc`);
+  const rows = await supabaseFetch(`/rest/v1/${supabaseTable}?select=id,report_number,status,created_at,updated_at,public_path,vehicle,customer,vin,action,risk,sent_at,viewed_at,payload&order=updated_at.desc`);
   return (rows || []).map(reportListItem);
 }
 
