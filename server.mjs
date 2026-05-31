@@ -12,9 +12,11 @@ const indexFile = join(root, 'index.html');
 const maxBody = 30 * 1024 * 1024;
 const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '';
 const supabaseTable = process.env.SUPABASE_REPORTS_TABLE || 'ppi_reports';
 const supabaseBucket = process.env.SUPABASE_PHOTO_BUCKET || 'ppi-photos';
 const useSupabase = !!(supabaseUrl && supabaseKey);
+const authEnabled = !!(supabaseUrl && supabaseAnonKey);
 const types = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -31,6 +33,20 @@ await mkdir(reportRoot, { recursive: true });
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
+}
+
+function setAuthCookie(res, token, maxAge) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `gn_ppi_auth=${token || ''}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`);
+}
+
+function getCookie(req, name) {
+  const cookies = String(req.headers.cookie || '').split(';');
+  for (const cookie of cookies) {
+    const [key, ...value] = cookie.trim().split('=');
+    if (key === name) return decodeURIComponent(value.join('='));
+  }
+  return '';
 }
 
 function readBody(req) {
@@ -82,6 +98,39 @@ async function supabaseFetch(path, options = {}) {
   const text = await res.text();
   if (!res.ok) throw new Error(text || `Supabase request failed (${res.status})`);
   return text ? JSON.parse(text) : null;
+}
+
+async function supabaseAuthFetch(path, options = {}, token = '') {
+  const res = await fetch(`${supabaseUrl}${path}`, {
+    ...options,
+    headers: {
+      apikey: supabaseAnonKey,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(text || `Supabase auth request failed (${res.status})`);
+  return text ? JSON.parse(text) : null;
+}
+
+async function currentUser(req) {
+  if (!authEnabled) return { id: 'local-dev', email: 'auth-disabled-local' };
+  const token = getCookie(req, 'gn_ppi_auth');
+  if (!token) return null;
+  try {
+    const user = await supabaseAuthFetch('/auth/v1/user', {}, token);
+    return user?.id ? { id: user.id, email: user.email || '' } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function requireAuth(req, res) {
+  const user = await currentUser(req);
+  if (user) return user;
+  json(res, 401, { error: 'Authentication required' });
+  return null;
 }
 
 async function uploadReportPhotos(id, photos = {}) {
@@ -193,7 +242,41 @@ async function listReports() {
 }
 
 async function api(req, res, url) {
+  if (req.method === 'GET' && url.pathname === '/api/auth/me') {
+    json(res, 200, { required: authEnabled, user: await currentUser(req) });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+    if (!authEnabled) {
+      json(res, 200, { required: false, user: { id: 'local-dev', email: 'auth-disabled-local' } });
+      return true;
+    }
+    try {
+      const input = JSON.parse(await readBody(req) || '{}');
+      const result = await supabaseAuthFetch('/auth/v1/token?grant_type=password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: input.email, password: input.password }),
+      });
+      const token = result?.access_token;
+      if (!token) throw new Error('No session token returned');
+      setAuthCookie(res, token, result.expires_in || 3600);
+      json(res, 200, { required: true, user: result.user ? { id: result.user.id, email: result.user.email || '' } : null });
+    } catch (error) {
+      json(res, 401, { error: 'Login failed. Check the email and password.' });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
+    setAuthCookie(res, '', 0);
+    json(res, 200, { ok: true });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/reports') {
+    if (!(await requireAuth(req, res))) return true;
     try {
       const input = JSON.parse(await readBody(req) || '{}');
       const now = new Date().toISOString();
@@ -234,6 +317,7 @@ async function api(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/reports') {
+    if (!(await requireAuth(req, res))) return true;
     json(res, 200, await listReports());
     return true;
   }
