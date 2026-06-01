@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -244,6 +244,21 @@ async function listReports() {
   return (rows || []).map(reportListItem);
 }
 
+async function deleteReport(id) {
+  const cleanId = String(id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!cleanId) throw new Error('Missing report ID');
+  if (!useSupabase) {
+    const path = reportPath(cleanId);
+    if (existsSync(path)) await unlink(path);
+    return { ok: true };
+  }
+  await supabaseFetch(`/rest/v1/${supabaseTable}?id=eq.${encodeURIComponent(cleanId)}`, {
+    method: 'DELETE',
+    headers: { Prefer: 'return=minimal' },
+  });
+  return { ok: true };
+}
+
 async function api(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/auth/me') {
     json(res, 200, { required: authEnabled, user: await currentUser(req) });
@@ -316,6 +331,17 @@ async function api(req, res, url) {
     } catch (error) {
       console.error('Report load failed:', error);
       json(res, 404, { error: error.message || 'Report not found' });
+    }
+    return true;
+  }
+
+  if (req.method === 'DELETE' && match) {
+    if (!(await requireAuth(req, res))) return true;
+    try {
+      json(res, 200, await deleteReport(match[1]));
+    } catch (error) {
+      console.error('Report delete failed:', error);
+      json(res, 400, { error: error.message || 'Report could not be deleted' });
     }
     return true;
   }
