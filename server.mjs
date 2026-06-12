@@ -342,6 +342,22 @@ async function getRepairOrder(id) {
   return rows[0].payload;
 }
 
+async function deleteRepairOrder(id) {
+  if (!id) throw new Error('Repair order ID is required');
+  if (!useSupabase) {
+    const root = join(dataRoot, 'repair-orders');
+    await unlink(join(root, `${cleanPathPart(id)}.json`)).catch(error => {
+      if (error?.code !== 'ENOENT') throw error;
+    });
+    return { deleted: true };
+  }
+  await supabaseFetch(`/rest/v1/${repairOrdersTable}?id=eq.${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { Prefer: 'return=minimal' },
+  });
+  return { deleted: true };
+}
+
 async function saveServicePrep(input = {}) {
   const now = new Date().toISOString();
   const id = String(input.id || `prep-${Date.now()}-${randomUUID().slice(0, 4)}`);
@@ -495,6 +511,17 @@ async function api(req, res, url) {
       json(res, 200, await getRepairOrder(roMatch[1]));
     } catch (error) {
       json(res, 404, { error: error.message || 'Repair order not found' });
+    }
+    return true;
+  }
+
+  if (req.method === 'DELETE' && roMatch) {
+    if (!(await requireAuth(req, res))) return true;
+    try {
+      json(res, 200, await deleteRepairOrder(roMatch[1]));
+    } catch (error) {
+      console.error('Repair order delete failed:', error);
+      json(res, 400, { error: error.message || 'Could not delete repair order' });
     }
     return true;
   }
