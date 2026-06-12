@@ -14,6 +14,8 @@ const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '';
 const supabaseTable = process.env.SUPABASE_REPORTS_TABLE || 'ppi_reports';
+const repairOrdersTable = process.env.SUPABASE_REPAIR_ORDERS_TABLE || 'repair_orders';
+const servicePrepsTable = process.env.SUPABASE_SERVICE_PREPS_TABLE || 'service_preps';
 const supabaseBucket = process.env.SUPABASE_PHOTO_BUCKET || 'ppi-photos';
 const useSupabase = !!(supabaseUrl && supabaseKey);
 const authEnabled = !!(supabaseUrl && supabaseAnonKey);
@@ -259,6 +261,118 @@ async function deleteReport(id) {
   return { ok: true };
 }
 
+function repairOrderListItem(row) {
+  const p = row.payload || row;
+  return {
+    ...(p || {}),
+    id: p?.id || row.id,
+    status: p?.status || row.status || 'estimates',
+    customer: p?.customer || row.customer || '',
+    vehicle: p?.vehicle || row.vehicle || '',
+    repairOrder: p?.repairOrder || row.repair_order || '',
+    updatedAt: p?.updatedAt || row.updated_at || '',
+    createdAt: p?.createdAt || row.created_at || '',
+  };
+}
+
+async function saveRepairOrder(input = {}) {
+  const now = new Date().toISOString();
+  const id = String(input.id || `ro-${Date.now()}-${randomUUID().slice(0, 4)}`);
+  const payload = {
+    ...input,
+    id,
+    status: input.status || 'estimates',
+    createdAt: input.createdAt || now,
+    updatedAt: now,
+  };
+  if (!useSupabase) {
+    const root = join(dataRoot, 'repair-orders');
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, `${cleanPathPart(id)}.json`), JSON.stringify(payload, null, 2), 'utf8');
+    return payload;
+  }
+  const row = {
+    id,
+    status: payload.status,
+    customer: payload.customer || '',
+    vehicle: payload.vehicle || '',
+    repair_order: payload.repairOrder || '',
+    estimate_id: payload.estimateId || payload.estimate?.id || '',
+    inspection_id: payload.inspectionId || '',
+    inspection_type: payload.inspectionType || '',
+    service_summary_id: payload.serviceSummaryId || payload.serviceSummary?.id || '',
+    created_at: payload.createdAt,
+    updated_at: payload.updatedAt,
+    payload,
+  };
+  const saved = await supabaseFetch(`/rest/v1/${repairOrdersTable}?on_conflict=id`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify(row),
+  });
+  return repairOrderListItem(saved?.[0] || row);
+}
+
+async function listRepairOrders() {
+  if (!useSupabase) {
+    const root = join(dataRoot, 'repair-orders');
+    const files = existsSync(root) ? await readdir(root) : [];
+    const orders = [];
+    for (const file of files.filter(x => x.endsWith('.json'))) {
+      try {
+        orders.push(JSON.parse(await readFile(join(root, file), 'utf8')));
+      } catch {}
+    }
+    return orders.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  }
+  const rows = await supabaseFetch(`/rest/v1/${repairOrdersTable}?select=id,status,customer,vehicle,repair_order,estimate_id,inspection_id,inspection_type,service_summary_id,created_at,updated_at,payload&order=updated_at.desc`);
+  return (rows || []).map(repairOrderListItem);
+}
+
+async function getRepairOrder(id) {
+  if (!useSupabase) {
+    const root = join(dataRoot, 'repair-orders');
+    return JSON.parse(await readFile(join(root, `${cleanPathPart(id)}.json`), 'utf8'));
+  }
+  const rows = await supabaseFetch(`/rest/v1/${repairOrdersTable}?id=eq.${encodeURIComponent(id)}&select=payload`);
+  if (!rows?.[0]?.payload) throw new Error('Repair order not found');
+  return rows[0].payload;
+}
+
+async function saveServicePrep(input = {}) {
+  const now = new Date().toISOString();
+  const id = String(input.id || `prep-${Date.now()}-${randomUUID().slice(0, 4)}`);
+  const payload = { ...input, id, updatedAt: now, createdAt: input.createdAt || now };
+  if (!useSupabase) return payload;
+  const row = {
+    id,
+    service: payload.service || payload.title || '',
+    chassis: payload.chassis || '',
+    trim: payload.trim || '',
+    engine: payload.engine || '',
+    transmission: payload.transmission || '',
+    drivetrain: payload.drivetrain || '',
+    created_at: payload.createdAt,
+    updated_at: payload.updatedAt,
+    payload,
+  };
+  const saved = await supabaseFetch(`/rest/v1/${servicePrepsTable}?on_conflict=id`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=representation' },
+    body: JSON.stringify(row),
+  });
+  return saved?.[0]?.payload || payload;
+}
+
+async function listServicePreps() {
+  if (!useSupabase) return [];
+  const rows = await supabaseFetch(`/rest/v1/${servicePrepsTable}?select=payload&order=updated_at.desc`);
+  return (rows || []).map(r => r.payload).filter(Boolean);
+}
+
 async function api(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/auth/me') {
     json(res, 200, { required: authEnabled, user: await currentUser(req) });
@@ -349,6 +463,61 @@ async function api(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/reports') {
     if (!(await requireAuth(req, res))) return true;
     json(res, 200, await listReports());
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/repair-orders') {
+    if (!(await requireAuth(req, res))) return true;
+    try {
+      json(res, 200, await listRepairOrders());
+    } catch (error) {
+      console.error('Repair order list failed:', error);
+      json(res, 400, { error: error.message || 'Could not load repair orders' });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/repair-orders') {
+    if (!(await requireAuth(req, res))) return true;
+    try {
+      json(res, 200, await saveRepairOrder(JSON.parse(await readBody(req) || '{}')));
+    } catch (error) {
+      console.error('Repair order save failed:', error);
+      json(res, error.message === 'Payload too large' ? 413 : 400, { error: error.message || 'Could not save repair order' });
+    }
+    return true;
+  }
+
+  const roMatch = url.pathname.match(/^\/api\/repair-orders\/([^/]+)$/);
+  if (req.method === 'GET' && roMatch) {
+    if (!(await requireAuth(req, res))) return true;
+    try {
+      json(res, 200, await getRepairOrder(roMatch[1]));
+    } catch (error) {
+      json(res, 404, { error: error.message || 'Repair order not found' });
+    }
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/service-preps') {
+    if (!(await requireAuth(req, res))) return true;
+    try {
+      json(res, 200, await listServicePreps());
+    } catch (error) {
+      console.error('Service prep list failed:', error);
+      json(res, 400, { error: error.message || 'Could not load service preps' });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/service-preps') {
+    if (!(await requireAuth(req, res))) return true;
+    try {
+      json(res, 200, await saveServicePrep(JSON.parse(await readBody(req) || '{}')));
+    } catch (error) {
+      console.error('Service prep save failed:', error);
+      json(res, error.message === 'Payload too large' ? 413 : 400, { error: error.message || 'Could not save service prep' });
+    }
     return true;
   }
 
