@@ -131,6 +131,7 @@ function defaultLaborLine(rate='150'){return{id:'labor-'+Date.now()+'-'+Math.ran
 function defaultPartLine(){return{id:'part-'+Date.now()+'-'+Math.random().toString(36).slice(2,5),name:'Part',partNumber:'',qty:'1',cost:'',price:'',vendor:'',url:'',markup:''}}
 function defaultEstimateLines(rate='150',taxRate='10.25'){return[{id:'line-1',title:'Requested Service',concern:'',labor:[defaultLaborLine(rate)],parts:[defaultPartLine()],taxEnabled:false,taxRate}]}
 function estimateLabel(e={}){return [e.repairOrder,e.vehicle,e.customer].filter(Boolean).join(' - ')||'Untitled Repair Order'}
+function serviceDraftLabel(d={}){const r=d.record||d||{},firstJob=(d.jobs||[])[0]?.title;return [r.repairOrder,r.vehicle,r.customer,firstJob].filter(Boolean).join(' - ')||'Untitled Service Summary'}
 function num(v){return Number(String(v||'').replace(/[^0-9.-]/g,''))||0}
 function estimateLaborRows(line={}){return Array.isArray(line.labor)&&line.labor.length?line.labor:[{...defaultLaborLine(),hours:line.laborHours||'',rate:line.laborRate||'150',technician:line.technician||''}]}
 function estimatePartRows(line={}){return Array.isArray(line.parts)&&line.parts.length?line.parts:[{...defaultPartLine(),name:line.parts||'Part',price:line.partsPrice||'',cost:line.partCost||''}]}
