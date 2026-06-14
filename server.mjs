@@ -337,6 +337,17 @@ async function uploadRepairOrderMedia(payload = {}) {
       }),
     };
   }
+  if (next.inspection?.photos) {
+    next.inspection = {
+      ...next.inspection,
+      photos: await uploadMediaMap({
+        ...context,
+        module: 'inspection',
+        parentId: next.inspection.id || next.inspectionId || 'inspection',
+        media: next.inspection.photos,
+      }),
+    };
+  }
   return next;
 }
 
