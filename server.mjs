@@ -493,6 +493,49 @@ async function api(req, res, url) {
     return true;
   }
 
+  const publicRoMatch = url.pathname.match(/^\/api\/public\/repair-orders\/([^/]+)$/);
+  if (req.method === 'GET' && publicRoMatch) {
+    try {
+      const ro = await getRepairOrder(publicRoMatch[1]);
+      const viewedAt = ro.customerViewedAt || new Date().toISOString();
+      const payload = { ...ro, customerViewedAt: viewedAt, updatedAt: ro.updatedAt || viewedAt };
+      saveRepairOrder(payload).catch(error => console.error('Public repair order viewed save failed:', error));
+      json(res, 200, payload);
+    } catch (error) {
+      json(res, 404, { error: error.message || 'Repair order not found' });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && publicRoMatch) {
+    try {
+      const existing = await getRepairOrder(publicRoMatch[1]);
+      const input = JSON.parse(await readBody(req) || '{}');
+      const estimate = input.estimate ? {
+        ...(existing.estimate || {}),
+        ...input.estimate,
+        estimate: { ...((existing.estimate || {}).estimate || {}), ...(input.estimate.estimate || {}) },
+      } : existing.estimate;
+      const authorizedAt = input.authorizedAt || estimate?.estimate?.authorizedAt || existing.authorizedAt || '';
+      const status = authorizedAt ? 'scheduled' : (existing.status || 'waiting');
+      const payload = {
+        ...existing,
+        estimate,
+        estimateId: input.estimateId || existing.estimateId || estimate?.id || '',
+        status,
+        inspectionChoice: estimate?.estimate?.inspectionChoice || existing.inspectionChoice,
+        authorizedAt,
+        scheduledAt: authorizedAt ? (existing.scheduledAt || authorizedAt) : existing.scheduledAt,
+        authorizedName: input.authorizedName || estimate?.estimate?.authorizedName || existing.authorizedName,
+        authorizedSignature: input.authorizedSignature || estimate?.estimate?.authorizedSignature || existing.authorizedSignature,
+      };
+      json(res, 200, await saveRepairOrder(payload));
+    } catch (error) {
+      json(res, 400, { error: error.message || 'Could not update repair order' });
+    }
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/repair-orders') {
     if (!(await requireAuth(req, res))) return true;
     try {
