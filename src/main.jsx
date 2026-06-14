@@ -3,11 +3,32 @@ import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import './styles.css';
 
+function clearGreaseLocalData() {
+  const removed = [];
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('grease-nomads')) {
+        removed.push(key);
+        localStorage.removeItem(key);
+      }
+    }
+    sessionStorage.clear();
+  } catch {}
+  return removed;
+}
+
+if (new URLSearchParams(location.search).get('clearLocalData') === '1') {
+  clearGreaseLocalData();
+  history.replaceState(null, '', '/');
+}
+
 function showFatal(error) {
   const root = document.getElementById('root');
   if (!root) return;
   const message = error?.message || error?.reason?.message || String(error?.reason || error || 'Unknown error');
   if (isRemoveChildDomError(message)) return;
+  if (isStorageQuotaError(message)) return;
   root.innerHTML = `<main style="min-height:100vh;background:#f28c0f;color:white;padding:24px;font-family:Arial,sans-serif"><section style="max-width:900px;margin:0 auto;background:#111;border:1px solid rgba(255,255,255,.25);border-radius:24px;padding:24px"><p style="margin:0 0 8px;color:#fed7aa;text-transform:uppercase;letter-spacing:.16em;font-size:12px">Grease Nomads Report Error</p><h1 style="margin:0 0 12px;font-size:28px">This report could not open.</h1><p style="line-height:1.5;color:#eee">Please screenshot this message and send it back so we can fix the customer link.</p><pre style="white-space:pre-wrap;background:#000;border:1px solid rgba(255,255,255,.2);border-radius:16px;padding:14px;color:#fecaca;font-size:12px;overflow:auto">${message.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</pre></section></main>`;
 }
 
@@ -16,8 +37,17 @@ function isRemoveChildDomError(error) {
   return message.includes("Failed to execute 'removeChild'") && message.includes('not a child of this node');
 }
 
+function isStorageQuotaError(error) {
+  const message = String(error?.message || error?.reason?.message || error || '');
+  return message.includes('exceeded the quota') || message.includes('QuotaExceededError');
+}
+
 window.addEventListener('error', e => {
   if (isRemoveChildDomError(e.error || e.message)) {
+    e.preventDefault();
+    return;
+  }
+  if (isStorageQuotaError(e.error || e.message)) {
     e.preventDefault();
     return;
   }
@@ -25,6 +55,10 @@ window.addEventListener('error', e => {
 });
 window.addEventListener('unhandledrejection', e => {
   if (isRemoveChildDomError(e.reason)) {
+    e.preventDefault();
+    return;
+  }
+  if (isStorageQuotaError(e.reason)) {
     e.preventDefault();
     return;
   }
@@ -38,10 +72,15 @@ class RootErrorBoundary extends React.Component {
   }
   static getDerivedStateFromError(error) {
     if (isRemoveChildDomError(error)) return null;
+    if (isStorageQuotaError(error)) return null;
     return { error };
   }
   componentDidCatch(error) {
     if (isRemoveChildDomError(error)) {
+      this.setState({ error: null });
+      return;
+    }
+    if (isStorageQuotaError(error)) {
       this.setState({ error: null });
       return;
     }
