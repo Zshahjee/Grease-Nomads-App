@@ -16,6 +16,9 @@ const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PU
 const supabaseTable = process.env.SUPABASE_REPORTS_TABLE || 'ppi_reports';
 const repairOrdersTable = process.env.SUPABASE_REPAIR_ORDERS_TABLE || 'repair_orders';
 const servicePrepsTable = process.env.SUPABASE_SERVICE_PREPS_TABLE || 'service_preps';
+const customersTable = process.env.SUPABASE_CUSTOMERS_TABLE || 'customers';
+const vehiclesTable = process.env.SUPABASE_VEHICLES_TABLE || 'vehicles';
+const mediaAssetsTable = process.env.SUPABASE_MEDIA_ASSETS_TABLE || 'media_assets';
 const supabaseBucket = process.env.SUPABASE_PHOTO_BUCKET || 'ppi-photos';
 const useSupabase = !!(supabaseUrl && supabaseKey);
 const authEnabled = !!(supabaseUrl && supabaseAnonKey);
@@ -135,10 +138,116 @@ async function requireAuth(req, res) {
   return null;
 }
 
-async function uploadReportPhotos(id, photos = {}) {
-  if (!useSupabase) return photos;
+function normalizePhone(value) {
+  return String(value || '').replace(/\D+/g, '');
+}
+
+function stableId(prefix, value) {
+  const clean = cleanPathPart(value || randomUUID().slice(0, 8)).toLowerCase();
+  return `${prefix}-${clean}`;
+}
+
+function repairOrderDetails(input = {}) {
+  const record = input.record || input.details || {};
+  const estimate = input.estimate?.estimate || input.estimate || {};
+  return {
+    customer: input.customer || record['Customer Name'] || estimate.customer || '',
+    phone: input.phone || record['Phone Number'] || estimate.phone || '',
+    email: input.email || record.Email || estimate.email || '',
+    vehicle: input.vehicle || record['Vehicle Year / Make / Model'] || estimate.vehicle || '',
+    vin: input.vin || record.VIN || estimate.vin || '',
+    mileage: input.mileage || record.Mileage || estimate.mileage || '',
+    color: input.color || record.Color || estimate.color || '',
+    trim: input.trim || record.Trim || estimate.trim || '',
+    engine: input.engine || record['Engine Code'] || estimate.engine || '',
+    transmission: input.transmission || record['Transmission Code'] || estimate.transmission || '',
+    chassis: input.chassis || record['Chassis Code'] || estimate.chassis || '',
+    repairOrder: input.repairOrder || record['Repair Order Number'] || estimate.repairOrder || '',
+  };
+}
+
+async function upsertCustomer(details = {}, existingId = '') {
+  if (!useSupabase) return existingId || '';
+  const phone = normalizePhone(details.phone);
+  const id = existingId || stableId('cust', details.email || phone || details.customer);
+  const row = {
+    id,
+    name: details.customer || '',
+    phone,
+    email: details.email || '',
+    updated_at: new Date().toISOString(),
+    payload: details,
+  };
+  await supabaseFetch(`/rest/v1/${customersTable}?on_conflict=id`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(row),
+  });
+  return id;
+}
+
+async function upsertVehicle(details = {}, customerId = '', existingId = '') {
+  if (!useSupabase) return existingId || '';
+  const id = existingId || stableId('veh', details.vin || `${customerId}-${details.vehicle}`);
+  const row = {
+    id,
+    customer_id: customerId || null,
+    year_make_model: details.vehicle || '',
+    vin: details.vin || '',
+    mileage: details.mileage || '',
+    color: details.color || '',
+    trim: details.trim || '',
+    engine: details.engine || '',
+    transmission: details.transmission || '',
+    chassis: details.chassis || '',
+    updated_at: new Date().toISOString(),
+    payload: details,
+  };
+  await supabaseFetch(`/rest/v1/${vehiclesTable}?on_conflict=id`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(row),
+  });
+  return id;
+}
+
+async function ensureCustomerVehicle(input = {}) {
+  if (!useSupabase) return { customerId: input.customerId || '', vehicleId: input.vehicleId || '', details: repairOrderDetails(input) };
+  const details = repairOrderDetails(input);
+  const customerId = await upsertCustomer(details, input.customerId || '');
+  const vehicleId = await upsertVehicle(details, customerId, input.vehicleId || '');
+  return { customerId, vehicleId, details };
+}
+
+async function saveMediaAsset(asset = {}) {
+  if (!useSupabase) return;
+  const row = {
+    id: asset.id,
+    repair_order_id: asset.repairOrderId || null,
+    customer_id: asset.customerId || null,
+    vehicle_id: asset.vehicleId || null,
+    module: asset.module || '',
+    parent_id: asset.parentId || '',
+    line_item_id: asset.lineItemId || '',
+    label: asset.label || '',
+    file_name: asset.fileName || '',
+    file_type: asset.fileType || '',
+    storage_path: asset.storagePath || '',
+    public_url: asset.publicUrl || '',
+    updated_at: new Date().toISOString(),
+    payload: asset.payload || {},
+  };
+  await supabaseFetch(`/rest/v1/${mediaAssetsTable}?on_conflict=id`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(row),
+  });
+}
+
+async function uploadMediaMap({ repairOrderId = '', module = 'inspection', parentId = '', media = {}, customerId = '', vehicleId = '' }) {
+  if (!useSupabase) return media;
   const next = {};
-  for (const [rowKey, files] of Object.entries(photos || {})) {
+  for (const [rowKey, files] of Object.entries(media || {})) {
     next[rowKey] = [];
     for (let i = 0; i < (files || []).length; i += 1) {
       const file = files[i] || {};
@@ -148,7 +257,15 @@ async function uploadReportPhotos(id, photos = {}) {
         continue;
       }
       const ext = cleanPathPart((file.name || '').split('.').pop() || parsed.type.split('/').pop() || 'jpg');
-      const path = `${cleanPathPart(id)}/${cleanPathPart(rowKey)}/${String(i + 1).padStart(2, '0')}-${cleanPathPart(file.name || `photo.${ext}`)}`;
+      const mediaId = String(file.id || randomUUID());
+      const path = [
+        'repair-orders',
+        cleanPathPart(repairOrderId || 'unassigned-ro'),
+        cleanPathPart(module),
+        cleanPathPart(parentId || 'draft'),
+        cleanPathPart(rowKey),
+        `${cleanPathPart(mediaId)}-${String(i + 1).padStart(2, '0')}-${cleanPathPart(file.name || `media.${ext}`)}`,
+      ].join('/');
       await supabaseFetch(`/storage/v1/object/${supabaseBucket}/${path}`, {
         method: 'POST',
         headers: {
@@ -157,8 +274,68 @@ async function uploadReportPhotos(id, photos = {}) {
         },
         body: parsed.body,
       });
-      next[rowKey].push({ ...file, url: publicStorageUrl(path), storagePath: path, type: parsed.type });
+      const uploaded = { ...file, id: mediaId, url: publicStorageUrl(path), storagePath: path, type: parsed.type };
+      next[rowKey].push(uploaded);
+      await saveMediaAsset({
+        id: mediaId,
+        repairOrderId,
+        customerId,
+        vehicleId,
+        module,
+        parentId,
+        lineItemId: rowKey,
+        label: file.label || '',
+        fileName: file.name || '',
+        fileType: parsed.type,
+        storagePath: path,
+        publicUrl: uploaded.url,
+        payload: uploaded,
+      });
     }
+  }
+  return next;
+}
+
+async function uploadReportPhotos(id, photos = {}, context = {}) {
+  return uploadMediaMap({
+    repairOrderId: context.repairOrderId || id,
+    module: context.module || 'inspection-report',
+    parentId: id,
+    media: photos,
+    customerId: context.customerId || '',
+    vehicleId: context.vehicleId || '',
+  });
+}
+
+async function uploadRepairOrderMedia(payload = {}) {
+  if (!useSupabase) return payload;
+  const context = {
+    repairOrderId: payload.id,
+    customerId: payload.customerId || '',
+    vehicleId: payload.vehicleId || '',
+  };
+  const next = { ...payload };
+  if (next.serviceSummary?.media) {
+    next.serviceSummary = {
+      ...next.serviceSummary,
+      media: await uploadMediaMap({
+        ...context,
+        module: 'service-summary',
+        parentId: next.serviceSummary.id || next.serviceSummaryId || 'service-summary',
+        media: next.serviceSummary.media,
+      }),
+    };
+  }
+  if (next.inspectionReport?.photos) {
+    next.inspectionReport = {
+      ...next.inspectionReport,
+      photos: await uploadMediaMap({
+        ...context,
+        module: 'inspection',
+        parentId: next.inspectionReport.id || next.inspectionId || 'inspection',
+        media: next.inspectionReport.photos,
+      }),
+    };
   }
   return next;
 }
@@ -189,7 +366,18 @@ async function saveReport(report) {
     await writeFile(reportPath(report.id), JSON.stringify(report, null, 2), 'utf8');
     return report;
   }
-  const uploaded = { ...report, photos: await uploadReportPhotos(report.id, report.photos) };
+  const links = await ensureCustomerVehicle(report);
+  const uploaded = {
+    ...report,
+    customerId: links.customerId || report.customerId || '',
+    vehicleId: links.vehicleId || report.vehicleId || '',
+    photos: await uploadReportPhotos(report.id, report.photos, {
+      repairOrderId: report.repairOrderId || report.id,
+      customerId: links.customerId || report.customerId || '',
+      vehicleId: links.vehicleId || report.vehicleId || '',
+      module: 'inspection',
+    }),
+  };
   const row = {
     id: uploaded.id,
     report_number: uploaded.reportNumber,
@@ -204,6 +392,9 @@ async function saveReport(report) {
     risk: uploaded.risk || '',
     sent_at: uploaded.sentAt || uploaded.createdAt,
     viewed_at: uploaded.viewedAt || null,
+    customer_id: uploaded.customerId || null,
+    vehicle_id: uploaded.vehicleId || null,
+    repair_order_id: uploaded.repairOrderId || null,
     payload: uploaded,
   };
   const saved = await supabaseFetch(`/rest/v1/${supabaseTable}?on_conflict=id`, {
@@ -270,6 +461,9 @@ function repairOrderListItem(row) {
     customer: p?.customer || row.customer || '',
     vehicle: p?.vehicle || row.vehicle || '',
     repairOrder: p?.repairOrder || row.repair_order || '',
+    customerId: p?.customerId || row.customer_id || '',
+    vehicleId: p?.vehicleId || row.vehicle_id || '',
+    jobType: p?.jobType || row.job_type || '',
     updatedAt: p?.updatedAt || row.updated_at || '',
     createdAt: p?.createdAt || row.created_at || '',
   };
@@ -278,13 +472,18 @@ function repairOrderListItem(row) {
 async function saveRepairOrder(input = {}) {
   const now = new Date().toISOString();
   const id = String(input.id || `ro-${Date.now()}-${randomUUID().slice(0, 4)}`);
-  const payload = {
+  const links = await ensureCustomerVehicle({ ...input, id });
+  const basePayload = {
     ...input,
     id,
     status: input.status || 'estimates',
     createdAt: input.createdAt || now,
     updatedAt: now,
+    customerId: links.customerId || input.customerId || '',
+    vehicleId: links.vehicleId || input.vehicleId || '',
+    jobType: input.jobType || input.inspectionType || input.inspectionChoice || input.estimate?.estimate?.jobType || 'service',
   };
+  const payload = useSupabase ? await uploadRepairOrderMedia(basePayload) : basePayload;
   if (!useSupabase) {
     const root = join(dataRoot, 'repair-orders');
     await mkdir(root, { recursive: true });
@@ -301,6 +500,9 @@ async function saveRepairOrder(input = {}) {
     inspection_id: payload.inspectionId || '',
     inspection_type: payload.inspectionType || '',
     service_summary_id: payload.serviceSummaryId || payload.serviceSummary?.id || '',
+    customer_id: payload.customerId || null,
+    vehicle_id: payload.vehicleId || null,
+    job_type: payload.jobType || '',
     created_at: payload.createdAt,
     updated_at: payload.updatedAt,
     payload,
@@ -328,7 +530,7 @@ async function listRepairOrders() {
     }
     return orders.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   }
-  const rows = await supabaseFetch(`/rest/v1/${repairOrdersTable}?select=id,status,customer,vehicle,repair_order,estimate_id,inspection_id,inspection_type,service_summary_id,created_at,updated_at,payload&order=updated_at.desc`);
+  const rows = await supabaseFetch(`/rest/v1/${repairOrdersTable}?select=id,status,customer,vehicle,repair_order,estimate_id,inspection_id,inspection_type,service_summary_id,customer_id,vehicle_id,job_type,created_at,updated_at,payload&order=updated_at.desc`);
   return (rows || []).map(repairOrderListItem);
 }
 
@@ -444,6 +646,9 @@ async function api(req, res, url) {
         action: input.action || '',
         risk: input.risk || '',
         inspectionType: input.inspectionType || 'ppi',
+        repairOrderId: input.repairOrderId || '',
+        customerId: input.customerId || '',
+        vehicleId: input.vehicleId || '',
         hybrid: !!input.hybrid,
       };
       json(res, 200, await saveReport(report));
